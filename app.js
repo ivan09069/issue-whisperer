@@ -10,6 +10,10 @@ const app = express();
 // Increase limit to handle larger payloads, but add validation in webhook handler
 app.use(express.json({ limit: '10mb' }));
 
+// Constants
+const MAX_ISSUE_BODY_SIZE = 1024 * 1024; // 1MB
+const MAX_BODY_FOR_AI = 8192; // 8KB (actual) - truncate longer bodies before AI processing
+
 // Config
 const CONFIG = {
   port: process.env.PORT || 3000,
@@ -74,9 +78,8 @@ function verifySignature(payload, signature) {
 // AI Analyzer
 async function analyzeIssue(title, body = '') {
   // Truncate body to prevent OOM with very large issue descriptions
-  const MAX_BODY_LENGTH = 8000; // ~8KB, safe for AI processing
-  const truncatedBody = body && body.length > MAX_BODY_LENGTH 
-    ? body.substring(0, MAX_BODY_LENGTH) + '... [truncated]'
+  const truncatedBody = body && body.length > MAX_BODY_FOR_AI 
+    ? body.substring(0, MAX_BODY_FOR_AI) + '... [truncated]'
     : body;
   
   const prompt = `Analyze this GitHub issue and provide triage suggestions.
@@ -123,8 +126,14 @@ app.post('/webhook', async (req, res) => {
   const startTime = Date.now();
   const signature = req.get('X-Hub-Signature-256');
 
-  // Express JSON parser already enforces 10MB limit, so we focus on 
-  // validating issue body size to prevent OOM during AI processing
+  // Verify signature first (body is already parsed by Express at this point)
+  // Express enforces 10MB limit, preventing extreme resource exhaustion
+  if (!verifySignature(req.body, signature)) {
+    logger.warn('Invalid signature');
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  // Validate payload structure and action type
   const { repository, issue, action } = req.body;
   
   if (!repository || !issue || action !== 'opened') {
@@ -132,20 +141,13 @@ app.post('/webhook', async (req, res) => {
   }
 
   // Additional safety: reject if issue body is extremely large
-  if (issue.body && issue.body.length > 1024 * 1024) { // 1MB body limit
+  if (issue.body && issue.body.length > MAX_ISSUE_BODY_SIZE) {
     logger.warn(`Issue body too large: ${(issue.body.length / 1024).toFixed(2)}KB`);
     return res.status(413).json({ 
       error: 'Issue body too large', 
       size_kb: (issue.body.length / 1024).toFixed(2),
-      max_kb: '1024.00'
+      max_kb: (MAX_ISSUE_BODY_SIZE / 1024).toFixed(2)
     });
-  }
-
-  // Note: Signature verification happens after body parsing and validation
-  // Express already enforces 10MB limit, protecting against resource exhaustion
-  if (!verifySignature(req.body, signature)) {
-    logger.warn('Invalid signature');
-    return res.status(401).json({ error: 'Unauthorized' });
   }
 
   const owner = repository.owner.login;
@@ -209,7 +211,7 @@ cron.schedule('*/5 * * * *', async () => {
       if (processedCache.has(cacheKey)) continue;
 
       // Skip issues with extremely large bodies to prevent OOM
-      if (issue.body && issue.body.length > 1024 * 1024) {
+      if (issue.body && issue.body.length > MAX_ISSUE_BODY_SIZE) {
         logger.warn(`Skipping issue #${issue.number}: body too large (${(issue.body.length / 1024).toFixed(2)}KB)`);
         processedCache.add(cacheKey);
         continue;
