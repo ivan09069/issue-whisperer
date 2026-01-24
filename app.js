@@ -141,6 +141,8 @@ app.post('/webhook', async (req, res) => {
     });
   }
 
+  // Note: Signature verification happens after body parsing and validation
+  // Express already enforces 10MB limit, protecting against resource exhaustion
   if (!verifySignature(req.body, signature)) {
     logger.warn('Invalid signature');
     return res.status(401).json({ error: 'Unauthorized' });
@@ -205,6 +207,13 @@ cron.schedule('*/5 * * * *', async () => {
       if (issue.pull_request) continue;
       const cacheKey = `${CONFIG.defaultOwner}/${CONFIG.defaultRepo}#${issue.number}`;
       if (processedCache.has(cacheKey)) continue;
+
+      // Skip issues with extremely large bodies to prevent OOM
+      if (issue.body && issue.body.length > 1024 * 1024) {
+        logger.warn(`Skipping issue #${issue.number}: body too large (${(issue.body.length / 1024).toFixed(2)}KB)`);
+        processedCache.add(cacheKey);
+        continue;
+      }
 
       const suggestions = await analyzeIssue(issue.title, issue.body);
       
