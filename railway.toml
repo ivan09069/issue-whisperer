@@ -1,0 +1,11 @@
+[build]
+builder = "nixpacks"
+
+[build.nixpacks]
+aptPkgs = ["python3", "python3-pip"]
+installCmd = "npm ci && pip install -r requirements.txt"
+
+[deploy]
+startCommand = "node app.js"
+healthcheckPath = "/health"
+restartPolicyType = "ON_FAILURE"
