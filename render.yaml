@@ -1,0 +1,17 @@
+services:
+  - type: web
+    name: issue-whisperer
+    runtime: node
+    buildCommand: npm install
+    startCommand: node app.js
+    envVars:
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GITHUB_WEBHOOK_SECRET
+        sync: false
+      - key: DEFAULT_OWNER
+        value: ivan09069
+      - key: DEFAULT_REPO
+        value: issue-whisperer
