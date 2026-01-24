@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""Grok-4 Issue Analyzer for Issue Whisperer"""
+"""Groq Issue Analyzer for Issue Whisperer"""
 import sys
 import json
 import os
 from openai import OpenAI
 
 def analyze_issue(title: str, body: str = "") -> dict:
-    """Analyze a GitHub issue using Grok-4 and return triage suggestions."""
+    """Analyze a GitHub issue using Groq and return triage suggestions."""
     
-    client = OpenAI(
-        api_key=os.getenv("XAI_API_KEY"),
-        base_url="https://api.x.ai/v1"
-    )
+    # Support both Groq and XAI
+    api_key = os.getenv("GROQ_API_KEY") or os.getenv("XAI_API_KEY")
+    base_url = "https://api.groq.com/openai/v1" if os.getenv("GROQ_API_KEY") else "https://api.x.ai/v1"
+    model = os.getenv("AI_MODEL", "llama-3.3-70b-versatile")
+    
+    client = OpenAI(api_key=api_key, base_url=base_url)
     
     prompt = f"""Analyze this GitHub issue and provide triage suggestions.
 
@@ -29,7 +31,7 @@ If it's a question about usage, label it "question"."""
 
     try:
         response = client.chat.completions.create(
-            model="grok-3-mini",
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             response_format={"type": "json_object"},
             max_tokens=200,
