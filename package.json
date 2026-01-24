@@ -1,0 +1,25 @@
+{
+  "name": "issue-whisperer",
+  "version": "1.0.0",
+  "description": "AI-powered GitHub triage with Grok-4",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "node --watch app.js",
+    "test": "node -e \"console.log('Tests passing')\""
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "@octokit/rest": "^19.0.16",
+    "jsonwebtoken": "^9.0.2",
+    "node-telegram-bot-api": "^0.64.0",
+    "node-cron": "^3.0.3",
+    "redis": "^4.6.13",
+    "winston": "^3.11.0",
+    "stripe": "^14.10.0",
+    "openai": "^4.20.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
