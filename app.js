@@ -7,7 +7,21 @@ const cron = require('node-cron');
 const OpenAI = require('openai');
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+// Increase limit to handle larger payloads, but add validation in webhook handler
+app.use(express.json({ limit: '10mb' }));
+
+// Handle JSON parsing errors gracefully
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    logger.error('Invalid JSON payload:', err.message);
+    return res.status(400).json({ error: 'Invalid JSON payload' });
+  }
+  if (err.type === 'entity.too.large') {
+    logger.error('Payload too large');
+    return res.status(413).json({ error: 'Payload too large' });
+  }
+  next(err);
+});
 
 // Config
 const CONFIG = {
@@ -59,10 +73,16 @@ function verifySignature(payload, signature) {
 
 // AI Analyzer
 async function analyzeIssue(title, body = '') {
+  // Truncate body to prevent OOM with very large issue descriptions
+  const MAX_BODY_LENGTH = 8000; // ~8KB, safe for AI processing
+  const truncatedBody = body && body.length > MAX_BODY_LENGTH 
+    ? body.substring(0, MAX_BODY_LENGTH) + '... [truncated]'
+    : body;
+  
   const prompt = `Analyze this GitHub issue and provide triage suggestions.
 
 Title: ${title}
-Body: ${body || '(No description)'}
+Body: ${truncatedBody || '(No description)'}
 
 Return ONLY valid JSON with these exact fields:
 {"label": "bug|enhancement|question|documentation|triage", "dupe": "None", "draft": "brief helpful response"}`;
@@ -102,6 +122,19 @@ app.get('/', (req, res) => {
 app.post('/webhook', async (req, res) => {
   const startTime = Date.now();
   const signature = req.get('X-Hub-Signature-256');
+
+  // Validate payload size to prevent OOM
+  const payloadSize = JSON.stringify(req.body).length;
+  const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024; // 5MB hard limit
+  
+  if (payloadSize > MAX_PAYLOAD_SIZE) {
+    logger.warn(`Payload too large: ${(payloadSize / 1024).toFixed(2)}KB`);
+    return res.status(413).json({ 
+      error: 'Payload too large', 
+      size_kb: (payloadSize / 1024).toFixed(2),
+      max_kb: (MAX_PAYLOAD_SIZE / 1024).toFixed(2)
+    });
+  }
 
   if (!verifySignature(req.body, signature)) {
     logger.warn('Invalid signature');
