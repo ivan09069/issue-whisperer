@@ -10,19 +10,6 @@ const app = express();
 // Increase limit to handle larger payloads, but add validation in webhook handler
 app.use(express.json({ limit: '10mb' }));
 
-// Handle JSON parsing errors gracefully
-app.use((err, req, res, next) => {
-  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
-    logger.error('Invalid JSON payload:', err.message);
-    return res.status(400).json({ error: 'Invalid JSON payload' });
-  }
-  if (err.type === 'entity.too.large') {
-    logger.error('Payload too large');
-    return res.status(413).json({ error: 'Payload too large' });
-  }
-  next(err);
-});
-
 // Config
 const CONFIG = {
   port: process.env.PORT || 3000,
@@ -41,6 +28,19 @@ const logger = winston.createLogger({
   level: 'info',
   format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
   transports: [new winston.transports.Console()]
+});
+
+// Handle JSON parsing errors gracefully (must be after logger initialization)
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    logger.error('Invalid JSON payload:', err.message);
+    return res.status(400).json({ error: 'Invalid JSON payload' });
+  }
+  if (err.type === 'entity.too.large') {
+    logger.error('Payload too large');
+    return res.status(413).json({ error: 'Payload too large' });
+  }
+  next(err);
 });
 
 // Groq client
@@ -123,27 +123,27 @@ app.post('/webhook', async (req, res) => {
   const startTime = Date.now();
   const signature = req.get('X-Hub-Signature-256');
 
-  // Validate payload size to prevent OOM
-  const payloadSize = JSON.stringify(req.body).length;
-  const MAX_PAYLOAD_SIZE = 5 * 1024 * 1024; // 5MB hard limit
+  // Express JSON parser already enforces 10MB limit, so we focus on 
+  // validating issue body size to prevent OOM during AI processing
+  const { repository, issue, action } = req.body;
   
-  if (payloadSize > MAX_PAYLOAD_SIZE) {
-    logger.warn(`Payload too large: ${(payloadSize / 1024).toFixed(2)}KB`);
+  if (!repository || !issue || action !== 'opened') {
+    return res.status(200).json({ status: 'ignored' });
+  }
+
+  // Additional safety: reject if issue body is extremely large
+  if (issue.body && issue.body.length > 1024 * 1024) { // 1MB body limit
+    logger.warn(`Issue body too large: ${(issue.body.length / 1024).toFixed(2)}KB`);
     return res.status(413).json({ 
-      error: 'Payload too large', 
-      size_kb: (payloadSize / 1024).toFixed(2),
-      max_kb: (MAX_PAYLOAD_SIZE / 1024).toFixed(2)
+      error: 'Issue body too large', 
+      size_kb: (issue.body.length / 1024).toFixed(2),
+      max_kb: '1024.00'
     });
   }
 
   if (!verifySignature(req.body, signature)) {
     logger.warn('Invalid signature');
     return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  const { repository, issue, action } = req.body;
-  if (!repository || !issue || action !== 'opened') {
-    return res.status(200).json({ status: 'ignored' });
   }
 
   const owner = repository.owner.login;
