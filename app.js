@@ -7,7 +7,8 @@ const cron = require('node-cron');
 const OpenAI = require('openai');
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+// Increase limit to handle larger payloads, but add validation in webhook handler
+app.use(express.json({ limit: '10mb' }));
 
 // Config
 const CONFIG = {
@@ -27,6 +28,19 @@ const logger = winston.createLogger({
   level: 'info',
   format: winston.format.combine(winston.format.timestamp(), winston.format.json()),
   transports: [new winston.transports.Console()]
+});
+
+// Handle JSON parsing errors gracefully (must be after logger initialization)
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    logger.error('Invalid JSON payload:', err.message);
+    return res.status(400).json({ error: 'Invalid JSON payload' });
+  }
+  if (err.type === 'entity.too.large') {
+    logger.error('Payload too large');
+    return res.status(413).json({ error: 'Payload too large' });
+  }
+  next(err);
 });
 
 // Groq client
@@ -59,10 +73,16 @@ function verifySignature(payload, signature) {
 
 // AI Analyzer
 async function analyzeIssue(title, body = '') {
+  // Truncate body to prevent OOM with very large issue descriptions
+  const MAX_BODY_LENGTH = 8000; // ~8KB, safe for AI processing
+  const truncatedBody = body && body.length > MAX_BODY_LENGTH 
+    ? body.substring(0, MAX_BODY_LENGTH) + '... [truncated]'
+    : body;
+  
   const prompt = `Analyze this GitHub issue and provide triage suggestions.
 
 Title: ${title}
-Body: ${body || '(No description)'}
+Body: ${truncatedBody || '(No description)'}
 
 Return ONLY valid JSON with these exact fields:
 {"label": "bug|enhancement|question|documentation|triage", "dupe": "None", "draft": "brief helpful response"}`;
@@ -103,14 +123,29 @@ app.post('/webhook', async (req, res) => {
   const startTime = Date.now();
   const signature = req.get('X-Hub-Signature-256');
 
+  // Express JSON parser already enforces 10MB limit, so we focus on 
+  // validating issue body size to prevent OOM during AI processing
+  const { repository, issue, action } = req.body;
+  
+  if (!repository || !issue || action !== 'opened') {
+    return res.status(200).json({ status: 'ignored' });
+  }
+
+  // Additional safety: reject if issue body is extremely large
+  if (issue.body && issue.body.length > 1024 * 1024) { // 1MB body limit
+    logger.warn(`Issue body too large: ${(issue.body.length / 1024).toFixed(2)}KB`);
+    return res.status(413).json({ 
+      error: 'Issue body too large', 
+      size_kb: (issue.body.length / 1024).toFixed(2),
+      max_kb: '1024.00'
+    });
+  }
+
+  // Note: Signature verification happens after body parsing and validation
+  // Express already enforces 10MB limit, protecting against resource exhaustion
   if (!verifySignature(req.body, signature)) {
     logger.warn('Invalid signature');
     return res.status(401).json({ error: 'Unauthorized' });
-  }
-
-  const { repository, issue, action } = req.body;
-  if (!repository || !issue || action !== 'opened') {
-    return res.status(200).json({ status: 'ignored' });
   }
 
   const owner = repository.owner.login;
@@ -172,6 +207,13 @@ cron.schedule('*/5 * * * *', async () => {
       if (issue.pull_request) continue;
       const cacheKey = `${CONFIG.defaultOwner}/${CONFIG.defaultRepo}#${issue.number}`;
       if (processedCache.has(cacheKey)) continue;
+
+      // Skip issues with extremely large bodies to prevent OOM
+      if (issue.body && issue.body.length > 1024 * 1024) {
+        logger.warn(`Skipping issue #${issue.number}: body too large (${(issue.body.length / 1024).toFixed(2)}KB)`);
+        processedCache.add(cacheKey);
+        continue;
+      }
 
       const suggestions = await analyzeIssue(issue.title, issue.body);
       
