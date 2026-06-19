@@ -2,7 +2,6 @@ const express = require('express');
 const winston = require('winston');
 const crypto = require('crypto');
 const { Octokit } = require('@octokit/rest');
-const TelegramBot = require('node-telegram-bot-api');
 const cron = require('node-cron');
 const OpenAI = require('openai');
 const Stripe = require('stripe');
@@ -61,8 +60,27 @@ const groq = new OpenAI({
 // GitHub client
 const octokit = new Octokit({ auth: CONFIG.githubToken });
 
-// Telegram (optional)
-const bot = CONFIG.telegramToken ? new TelegramBot(CONFIG.telegramToken, { polling: false }) : null;
+// Telegram notification helper (optional, no external Telegram package)
+async function sendTelegramMessage(text) {
+  if (!CONFIG.telegramToken || !CONFIG.channelId) return;
+
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${CONFIG.telegramToken}/sendMessage`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        chat_id: CONFIG.channelId,
+        text
+      })
+    });
+
+    if (!response.ok) {
+      logger.warn('Telegram notification failed', { status: response.status });
+    }
+  } catch (err) {
+    logger.warn('Telegram notification failed', { error: err.message });
+  }
+}
 
 // Stripe (optional)
 const stripe = CONFIG.stripeSecretKey ? new Stripe(CONFIG.stripeSecretKey, {
