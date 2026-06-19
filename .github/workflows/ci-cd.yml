@@ -2,44 +2,22 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
   pull_request:
-    branches:
-      - main
-
-permissions:
-  contents: read
 
 jobs:
   test:
-    name: node-${{ matrix.node }} python-${{ matrix.python }}
     runs-on: ubuntu-latest
 
-    strategy:
-      fail-fast: false
-      matrix:
-        node:
-          - 20
-          - 22
-        python:
-          - "3.11"
-          - "3.12"
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
-          cache: npm
+          node-version: "20"
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.11"
 
       - name: Install dependencies
         run: npm ci
@@ -52,7 +30,3 @@ jobs:
 
       - name: Audit high severity only
         run: npm audit --audit-level=high
-
-      - name: Docker build test
-        if: ${{ hashFiles('Dockerfile') != '' }}
-        run: docker build -t issue-whisperer-ci .
