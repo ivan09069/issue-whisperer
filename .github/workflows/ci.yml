@@ -36,3 +36,7 @@ jobs:
 
       - name: Audit high severity only
         run: npm audit --audit-level=high || true
+
+
+      - name: Docker build test
+        run: docker build -t issue-whisperer-ci .
