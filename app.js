@@ -12,7 +12,12 @@ const app = express();
 app.use('/stripe-webhook', express.raw({ type: 'application/json', limit: '2mb' }));
 
 // Increase limit to handle larger payloads, but add validation in webhook handler
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, res, buf) => {
+    req.rawBody = buf;
+  }
+}));
 
 // Config
 const CONFIG = {
@@ -117,16 +122,19 @@ function logTransition(event, data = {}) {
 const processedCache = new Set();
 
 // Signature verification
-function verifySignature(payload, signature) {
+function verifySignature(rawBody, signature) {
   if (!CONFIG.webhookSecret) return true;
+  if (!signature || !signature.startsWith('sha256=')) return false;
+
   const hmac = crypto.createHmac('sha256', CONFIG.webhookSecret);
-  hmac.update(JSON.stringify(payload));
+  hmac.update(rawBody);
   const digest = 'sha256=' + hmac.digest('hex');
-  try {
-    return crypto.timingSafeEqual(Buffer.from(signature || ''), Buffer.from(digest));
-  } catch {
-    return false;
-  }
+
+  const expected = Buffer.from(digest, 'utf8');
+  const received = Buffer.from(signature, 'utf8');
+
+  if (expected.length !== received.length) return false;
+  return crypto.timingSafeEqual(expected, received);
 }
 
 // AI Analyzer
@@ -293,7 +301,7 @@ app.post('/webhook', async (req, res) => {
 
   // Note: Signature verification happens after body parsing and validation
   // Express already enforces 10MB limit, protecting against resource exhaustion
-  if (!verifySignature(req.body, signature)) {
+  if (!verifySignature(req.rawBody, signature)) {
     logger.warn('Invalid signature');
     return res.status(401).json({ error: 'Unauthorized' });
   }
