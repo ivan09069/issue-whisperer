@@ -5,8 +5,13 @@ const { Octokit } = require('@octokit/rest');
 const TelegramBot = require('node-telegram-bot-api');
 const cron = require('node-cron');
 const OpenAI = require('openai');
+const Stripe = require('stripe');
+const { createClient } = require('redis');
 
 const app = express();
+// Stripe requires raw body for signature verification. Keep this before express.json().
+app.use('/stripe-webhook', express.raw({ type: 'application/json', limit: '2mb' }));
+
 // Increase limit to handle larger payloads, but add validation in webhook handler
 app.use(express.json({ limit: '10mb' }));
 
@@ -18,6 +23,10 @@ const CONFIG = {
   groqKey: process.env.GROQ_API_KEY,
   telegramToken: process.env.TELEGRAM_TOKEN,
   channelId: process.env.CHANNEL_ID,
+  stripeSecretKey: process.env.STRIPE_SECRET_KEY,
+  stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET,
+  redisUrl: process.env.REDIS_URL,
+  featureProProductId: process.env.FEATURE_PRO_PRODUCT_ID,
   defaultOwner: process.env.DEFAULT_OWNER || 'ivan09069',
   defaultRepo: process.env.DEFAULT_REPO || 'issue-whisperer',
   aiModel: process.env.AI_MODEL || 'llama-3.3-70b-versatile'
@@ -54,6 +63,37 @@ const octokit = new Octokit({ auth: CONFIG.githubToken });
 
 // Telegram (optional)
 const bot = CONFIG.telegramToken ? new TelegramBot(CONFIG.telegramToken, { polling: false }) : null;
+
+// Stripe (optional)
+const stripe = CONFIG.stripeSecretKey ? new Stripe(CONFIG.stripeSecretKey, {
+  apiVersion: '2024-06-20'
+}) : null;
+
+// Redis-backed idempotency (optional, falls back to memory)
+const redis = CONFIG.redisUrl ? createClient({ url: CONFIG.redisUrl }) : null;
+const stripeEventCache = new Set();
+
+if (redis) {
+  redis.on('error', (err) => logger.error('Redis error:', err.message));
+  redis.connect()
+    .then(() => logger.info('Redis connected'))
+    .catch((err) => logger.error('Redis connect failed:', err.message));
+}
+
+async function markOnce(key, ttlSeconds = 86400) {
+  if (redis?.isOpen) {
+    const result = await redis.set(key, '1', { NX: true, EX: ttlSeconds });
+    return result === 'OK';
+  }
+
+  if (stripeEventCache.has(key)) return false;
+  stripeEventCache.add(key);
+  return true;
+}
+
+function logTransition(event, data = {}) {
+  logger.info('transition', { event, ...data });
+}
 
 // Processed issues cache (in-memory for simplicity)
 const processedCache = new Set();
@@ -116,6 +156,98 @@ app.get('/health', (req, res) => {
 
 app.get('/', (req, res) => {
   res.json({ name: 'Issue Whisperer', version: '1.0.0', status: 'running' });
+});
+
+
+// Stripe webhook handler
+app.post('/stripe-webhook', async (req, res) => {
+  const startTime = Date.now();
+
+  if (!stripe || !CONFIG.stripeWebhookSecret) {
+    logTransition('stripe_webhook_not_configured');
+    return res.status(503).json({ error: 'Stripe webhook not configured' });
+  }
+
+  const signature = req.get('stripe-signature');
+  let event;
+
+  try {
+    event = stripe.webhooks.constructEvent(req.body, signature, CONFIG.stripeWebhookSecret);
+  } catch (err) {
+    logTransition('stripe_webhook_signature_failed', { message: err.message });
+    return res.status(400).json({ error: 'Invalid Stripe signature' });
+  }
+
+  const eventKey = `stripe:event:${event.id}`;
+  const firstSeen = await markOnce(eventKey, 3 * 24 * 60 * 60);
+
+  if (!firstSeen) {
+    logTransition('stripe_webhook_duplicate', {
+      id: event.id,
+      type: event.type
+    });
+    return res.status(200).json({ status: 'already_processed', id: event.id });
+  }
+
+  try {
+    logTransition('stripe_webhook_received', {
+      id: event.id,
+      type: event.type,
+      livemode: event.livemode
+    });
+
+    switch (event.type) {
+      case 'checkout.session.completed':
+        logTransition('stripe_checkout_completed', {
+          id: event.id,
+          customer: event.data.object.customer || null,
+          subscription: event.data.object.subscription || null
+        });
+        break;
+
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated':
+      case 'customer.subscription.deleted':
+        logTransition('stripe_subscription_transition', {
+          id: event.id,
+          subscription: event.data.object.id,
+          status: event.data.object.status || null,
+          customer: event.data.object.customer || null
+        });
+        break;
+
+      case 'invoice.payment_succeeded':
+      case 'invoice.payment_failed':
+        logTransition('stripe_invoice_transition', {
+          id: event.id,
+          invoice: event.data.object.id,
+          customer: event.data.object.customer || null,
+          subscription: event.data.object.subscription || null,
+          paid: event.data.object.paid || false
+        });
+        break;
+
+      default:
+        logTransition('stripe_webhook_ignored', {
+          id: event.id,
+          type: event.type
+        });
+    }
+
+    return res.json({
+      status: 'processed',
+      id: event.id,
+      type: event.type,
+      latency_ms: Date.now() - startTime
+    });
+  } catch (err) {
+    logTransition('stripe_webhook_error', {
+      id: event.id,
+      type: event.type,
+      message: err.message
+    });
+    return res.status(500).json({ error: 'Stripe webhook processing failed' });
+  }
 });
 
 // Webhook handler
