@@ -60,3 +60,20 @@ npm start
 ## License
 
 MIT - Built by [EchoForge Studios](https://github.com/ivan09069)
+
+## Security configuration
+
+`GITHUB_WEBHOOK_SECRET` is required for webhook processing. Missing configuration
+returns 503; missing or invalid signatures return 401 before AI/provider requests.
+`GITHUB_ALLOWED_REPOS` is a comma-separated allowlist; it defaults to
+`DEFAULT_OWNER/DEFAULT_REPO`. Only signed `issues` events for enabled repositories
+are processed. Concurrent duplicate deliveries within one process are rejected.
+Multiple replicas still require a shared durable work queue before scale-up.
+
+Background polling is off unless `ENABLE_POLLING=true`. The optional Telegram
+helper now uses the existing configured integration. Tests use fake providers and
+never contact GitHub, Groq, Stripe, Redis, or Telegram.
+
+```sh
+node --test security.test.js
+```
