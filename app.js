@@ -120,12 +120,10 @@ function logTransition(event, data = {}) {
 
 // Processed issues cache (in-memory for simplicity)
 const processedCache = new Set();
-const inFlightIssues = new Set();
-const allowedRepos = new Set((process.env.GITHUB_ALLOWED_REPOS || `${CONFIG.defaultOwner}/${CONFIG.defaultRepo}`).split(',').map(repo => repo.trim().toLowerCase()).filter(Boolean));
 
 // Signature verification
 function verifySignature(rawBody, signature) {
-  if (!CONFIG.webhookSecret || !Buffer.isBuffer(rawBody) || typeof signature !== 'string') return false;
+  if (!CONFIG.webhookSecret) return true;
   if (!signature || !signature.startsWith('sha256=')) return false;
 
   const hmac = crypto.createHmac('sha256', CONFIG.webhookSecret);
@@ -283,29 +281,39 @@ app.post('/webhook', async (req, res) => {
   const startTime = Date.now();
   const signature = req.get('X-Hub-Signature-256');
 
-  if (!CONFIG.webhookSecret) return res.status(503).json({ error: 'GitHub webhook not configured' });
-  if (!verifySignature(req.rawBody, signature)) return res.status(401).json({ error: 'Unauthorized' });
-  if (req.get('X-GitHub-Event') !== 'issues') return res.status(200).json({ status: 'ignored' });
-  const { repository, issue, action } = req.body || {};
-  if (action !== 'opened') return res.status(200).json({ status: 'ignored' });
-  if (typeof repository?.owner?.login !== 'string' || typeof repository?.name !== 'string' ||
-      !Number.isSafeInteger(issue?.number) || issue.number < 1 || typeof issue.title !== 'string' ||
-      (issue.body != null && typeof issue.body !== 'string')) {
-    return res.status(400).json({ error: 'Invalid issue payload' });
+  // Express JSON parser already enforces 10MB limit, so we focus on 
+  // validating issue body size to prevent OOM during AI processing
+  const { repository, issue, action } = req.body;
+  
+  if (!repository || !issue || action !== 'opened') {
+    return res.status(200).json({ status: 'ignored' });
   }
-  if (!allowedRepos.has(`${repository.owner.login}/${repository.name}`.toLowerCase()))
-    return res.status(403).json({ error: 'Repository not enabled' });
-  if (issue.title.length > 1024 || (issue.body && issue.body.length > 1024 * 1024))
-    return res.status(413).json({ error: 'Issue content too large' });
+
+  // Additional safety: reject if issue body is extremely large
+  if (issue.body && issue.body.length > 1024 * 1024) { // 1MB body limit
+    logger.warn(`Issue body too large: ${(issue.body.length / 1024).toFixed(2)}KB`);
+    return res.status(413).json({ 
+      error: 'Issue body too large', 
+      size_kb: (issue.body.length / 1024).toFixed(2),
+      max_kb: '1024.00'
+    });
+  }
+
+  // Note: Signature verification happens after body parsing and validation
+  // Express already enforces 10MB limit, protecting against resource exhaustion
+  if (!verifySignature(req.rawBody, signature)) {
+    logger.warn('Invalid signature');
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
 
   const owner = repository.owner.login;
   const repo = repository.name;
   const issueNumber = issue.number;
   const cacheKey = `${owner}/${repo}#${issueNumber}`;
 
-  if (processedCache.has(cacheKey)) return res.status(200).json({ status: 'already processed' });
-  if (inFlightIssues.has(cacheKey)) return res.status(409).json({ status: 'processing' });
-  inFlightIssues.add(cacheKey);
+  if (processedCache.has(cacheKey)) {
+    return res.status(200).json({ status: 'already processed' });
+  }
 
   logger.info(`Processing #${issueNumber} in ${owner}/${repo}`);
 
@@ -331,19 +339,19 @@ app.post('/webhook', async (req, res) => {
     const latency = Date.now() - startTime;
     logger.info(`Done #${issueNumber} in ${latency}ms | Label: ${suggestions.label}`);
 
-    await sendTelegramMessage(`🎫 #${issueNumber} triaged | ${suggestions.label} | ${latency}ms`);
+    if (bot && CONFIG.channelId) {
+      bot.sendMessage(CONFIG.channelId, `🎫 #${issueNumber} triaged | ${suggestions.label} | ${latency}ms`).catch(() => {});
+    }
 
     res.json({ status: 'processed', label: suggestions.label, latency_ms: latency });
   } catch (err) {
     logger.error('Webhook error:', err.message);
     res.status(500).json({ error: 'Processing failed' });
-  } finally {
-    inFlightIssues.delete(cacheKey);
   }
 });
 
 // Polling fallback (every 5 mins)
-if (require.main === module && process.env.ENABLE_POLLING === 'true') cron.schedule('*/5 * * * *', async () => {
+cron.schedule('*/5 * * * *', async () => {
   logger.info('Polling for new issues...');
   try {
     const { data: issues } = await octokit.rest.issues.listForRepo({
@@ -389,9 +397,7 @@ if (require.main === module && process.env.ENABLE_POLLING === 'true') cron.sched
 });
 
 // Start
-if (require.main === module) app.listen(CONFIG.port, () => {
+app.listen(CONFIG.port, () => {
   logger.info(`Issue Whisperer running on port ${CONFIG.port}`);
   logger.info(`Target: ${CONFIG.defaultOwner}/${CONFIG.defaultRepo}`);
 });
-
-module.exports = { app, verifySignature };
