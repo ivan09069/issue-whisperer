@@ -59,7 +59,9 @@ npm start
 
 ## License
 
-MIT - Built by [EchoForge Studios](https://github.com/ivan09069)
+Copyright (c) 2026 EchoForge Studios. All rights reserved.
+No use or copy is permitted without a written license. See [LICENSE](LICENSE).
+Built by [EchoForge Studios](https://github.com/ivan09069).
 
 ## Security configuration
 
