@@ -5,7 +5,8 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "dev": "node --watch app.js"
+    "dev": "node --watch app.js",
+    "test": "node --test security.test.js"
   },
   "dependencies": {
     "@octokit/rest": "^20.0.2",

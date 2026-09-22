@@ -1,14 +1,27 @@
-# Issue Whisperer 🤖
+# Issue Whisperer
 
-AI-powered GitHub issue triage using Grok. Automatically labels issues, detects duplicates, and drafts responses.
+GitHub issue triage. A local classifier runs with no key. Groq drafts the comment when `GROQ_API_KEY` is set.
 
 ## Quick Start
 
-### Deploy to Railway (Recommended)
-1. Fork this repo
-2. Connect to [Railway](https://railway.app)
-3. Add environment variables (see `.env.example`)
-4. Deploy
+### Offline pass
+
+```bash
+python analyze_issue.py "login times out" "token refresh throws"
+```
+
+Python standard library only. No `requirements.txt`.
+
+### Server
+
+From a licensed checkout:
+
+1. `npm install`
+2. Copy `.env.example` to `.env`
+3. `npm test`
+4. `npm start`
+
+Railway: connect the checkout, set the variables in `.env.example`, deploy. The license does not grant a fork.
 
 ### GitHub Webhook Setup
 1. Go to your repo → Settings → Webhooks → Add webhook
@@ -22,7 +35,7 @@ AI-powered GitHub issue triage using Grok. Automatically labels issues, detects 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `GITHUB_TOKEN` | Yes | GitHub PAT with repo access |
-| `XAI_API_KEY` | Yes | x.ai API key for Grok |
+| `GROQ_API_KEY` | Yes, for model comments | Groq key. The offline classifier does not use it. |
 | `GITHUB_WEBHOOK_SECRET` | No | Webhook signature secret |
 | `REDIS_URL` | No | Redis for caching |
 | `STRIPE_SECRET_KEY` | No | Pro tier gating |
@@ -32,7 +45,7 @@ AI-powered GitHub issue triage using Grok. Automatically labels issues, detects 
 ## How It Works
 
 1. **Webhook receives** new issue event
-2. **Grok analyzes** title and body
+2. **Groq analyzes** title and body when `GROQ_API_KEY` is set
 3. **Labels applied** (bug/enhancement/question/docs)
 4. **Draft response** posted as comment
 5. **Duplicates flagged** if detected
@@ -45,15 +58,8 @@ AI-powered GitHub issue triage using Grok. Automatically labels issues, detects 
 ## Local Development
 
 ```bash
-# Install deps
 npm install
-pip install -r requirements.txt
-
-# Set environment
-cp .env.example .env
-# Edit .env with your keys
-
-# Run
+npm test
 npm start
 ```
 
